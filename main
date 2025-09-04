@@ -1,0 +1,139 @@
+1️⃣ Préparer l’arborescence pour les challenges Let’s Encrypt
+
+Crée un dossier partagé pour les challenges ACME de Certbot :
+
+sudo mkdir -p /var/www/certbot
+sudo chown -R www-data:www-data /var/www/certbot
+sudo chmod -R 755 /var/www/certbot
+
+
+Tester l’accès depuis l’extérieur :
+
+echo "test-certbot" | sudo tee /var/www/certbot/.well-known/acme-challenge/testfile
+curl http://ton-domaine/.well-known/acme-challenge/testfile
+
+
+Si tu vois test-certbot → Nginx sert correctement les fichiers pour le challenge.
+
+2️⃣ Ajouter un nouveau domaine ou sous-domaine dans Nginx
+
+Crée un fichier de configuration Nginx pour ton domaine :
+
+sudo nano /etc/nginx/sites-available/nouveau-domaine.com.conf
+
+
+Exemple minimal pour HTTP -> HTTPS + challenge :
+
+server {
+    listen 80;
+    server_name nouveau-domaine.com www.nouveau-domaine.com;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        allow all;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+
+Pour un service derrière Docker (ex: Odoo sur 8069) :
+
+upstream odoo {
+    server 127.0.0.1:8069;
+}
+
+server {
+    listen 443 ssl;
+    server_name nouveau-domaine.com www.nouveau-domaine.com;
+
+    ssl_certificate /etc/letsencrypt/live/nouveau-domaine.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/nouveau-domaine.com/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    location / {
+        proxy_pass http://odoo;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host $host;
+    }
+}
+
+
+Activer le site :
+
+sudo ln -s /etc/nginx/sites-available/nouveau-domaine.com.conf /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+
+3️⃣ Installer SSL avec Certbot
+sudo certbot --nginx -d nouveau-domaine.com -d www.nouveau-domaine.com
+
+
+Certbot détecte le bloc HTTP et place automatiquement le certificat.
+
+Tu peux répéter pour chaque sous-domaine.
+
+💡 Pour Docker : si Nginx reverse-proxy est hors conteneur, Certbot fonctionne normalement via /var/www/certbot.
+
+4️⃣ Automatiser le renouvellement
+
+Certbot installe automatiquement un cronjob ou un systemd timer pour renouveler tous les certificats :
+
+sudo systemctl list-timers | grep certbot
+
+
+Test du renouvellement automatique sans attendre l’échéance :
+
+sudo certbot renew --dry-run
+
+
+✅ Si pas d’erreur, tout est bien configuré.
+
+5️⃣ Commandes de vérification et debugging
+a) Vérifier la syntaxe Nginx
+sudo nginx -t
+
+b) Vérifier que le challenge est servi
+curl http://ton-domaine/.well-known/acme-challenge/testfile
+
+
+Doit retourner le contenu du fichier de test.
+
+c) Vérifier les certificats existants
+sudo certbot certificates
+
+
+Montre les dates d’expiration et chemins vers fullchain.pem et privkey.pem.
+
+d) Vérifier que le renouvellement automatique est actif
+sudo systemctl list-timers | grep certbot
+sudo systemctl status certbot.timer
+
+6️⃣ Renouvellement manuel (cas extrême)
+
+Pour renouveler un seul certificat immédiatement :
+
+sudo certbot renew --cert-name nom-du-certificat
+
+
+Pour forcer un renouvellement et mise à jour Nginx :
+
+sudo certbot renew --force-renewal
+sudo systemctl reload nginx
+
+7️⃣ Bonnes pratiques
+
+Toujours tester avec curl avant d’exécuter Certbot.
+
+Ne jamais mettre de server imbriqué dans un autre server.
+
+Séparer les confs Nginx par domaine/sub-domaine dans sites-available.
+
+Documenter les ports des conteneurs et les upstream Nginx.
+
+Vérifier le timer systemd de Certbot régulièrement, surtout après un reboot.
